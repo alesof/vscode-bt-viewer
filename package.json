@@ -85,6 +85,11 @@
           "type": "number",
           "default": 1666,
           "description": "Port for live BT.CPP ZMQ monitor connection (REP socket; SUB is port+1)"
+        },
+        "behaviortreeViewer.monitorBlackboard": {
+          "type": "boolean",
+          "default": true,
+          "description": "Poll blackboard variable values from the running BT during live monitoring"
         }
       }
     }

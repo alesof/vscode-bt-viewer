@@ -182,6 +182,10 @@ export class BTViewerPanel {
       return;
     }
 
+    const bbEnabled = vscode.workspace
+      .getConfiguration("behaviortreeViewer")
+      .get<boolean>("monitorBlackboard", true);
+
     this.monitor = new BTMonitor({
       onStatus: (status) => {
         this.panel.webview.postMessage({
@@ -210,6 +214,7 @@ export class BTViewerPanel {
         // SubTree expansion is now per-node in the webview, not a global flag.
         try {
           const parsed = parseBTXml(xml);
+          this.monitor?.setSubtreeIds(parsed.trees.map(t => t.id));
           this.panel.webview.postMessage({
             command: "updateTree",
             data: parsed,
@@ -220,6 +225,12 @@ export class BTViewerPanel {
           // If parsing fails, continue with the file-based tree
         }
       },
+      onBlackboard: bbEnabled ? (values) => {
+        this.panel.webview.postMessage({
+          command: "monitorBlackboard",
+          values,
+        });
+      } : undefined,
     });
 
     this.monitor.start(host, port);

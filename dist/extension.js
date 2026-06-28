@@ -2361,6 +2361,129 @@ function parseBTXml(xmlContent, options) {
   return { mainTreeId, trees, nodeModels: models };
 }
 
+// src/msgpack.ts
+function decodeMsgpack(buf) {
+  let pos = 0;
+  function readStr(len) {
+    const s = buf.toString("utf-8", pos, pos + len);
+    pos += len;
+    return s;
+  }
+  function readArr(len) {
+    const arr = [];
+    for (let i = 0; i < len; i++) arr.push(read());
+    return arr;
+  }
+  function readMap(len) {
+    const obj = {};
+    for (let i = 0; i < len; i++) {
+      const k = String(read());
+      obj[k] = read();
+    }
+    return obj;
+  }
+  function read() {
+    const b = buf[pos++];
+    if (b <= 127) return b;
+    if ((b & 240) === 128) return readMap(b & 15);
+    if ((b & 240) === 144) return readArr(b & 15);
+    if ((b & 224) === 160) return readStr(b & 31);
+    if (b >= 224) return b - 256;
+    switch (b) {
+      case 192:
+        return null;
+      case 194:
+        return false;
+      case 195:
+        return true;
+      case 202: {
+        const v = buf.readFloatBE(pos);
+        pos += 4;
+        return v;
+      }
+      case 203: {
+        const v = buf.readDoubleBE(pos);
+        pos += 8;
+        return v;
+      }
+      case 204:
+        return buf[pos++];
+      case 205: {
+        const v = buf.readUInt16BE(pos);
+        pos += 2;
+        return v;
+      }
+      case 206: {
+        const v = buf.readUInt32BE(pos);
+        pos += 4;
+        return v;
+      }
+      case 207: {
+        const v = buf.readBigUInt64BE(pos);
+        pos += 8;
+        return Number(v);
+      }
+      case 208: {
+        const v = buf.readInt8(pos);
+        pos += 1;
+        return v;
+      }
+      case 209: {
+        const v = buf.readInt16BE(pos);
+        pos += 2;
+        return v;
+      }
+      case 210: {
+        const v = buf.readInt32BE(pos);
+        pos += 4;
+        return v;
+      }
+      case 211: {
+        const v = buf.readBigInt64BE(pos);
+        pos += 8;
+        return Number(v);
+      }
+      case 217: {
+        const l = buf[pos++];
+        return readStr(l);
+      }
+      case 218: {
+        const l = buf.readUInt16BE(pos);
+        pos += 2;
+        return readStr(l);
+      }
+      case 219: {
+        const l = buf.readUInt32BE(pos);
+        pos += 4;
+        return readStr(l);
+      }
+      case 220: {
+        const l = buf.readUInt16BE(pos);
+        pos += 2;
+        return readArr(l);
+      }
+      case 221: {
+        const l = buf.readUInt32BE(pos);
+        pos += 4;
+        return readArr(l);
+      }
+      case 222: {
+        const l = buf.readUInt16BE(pos);
+        pos += 2;
+        return readMap(l);
+      }
+      case 223: {
+        const l = buf.readUInt32BE(pos);
+        pos += 4;
+        return readMap(l);
+      }
+      default:
+        throw new Error(`msgpack: unknown byte 0x${b.toString(16)} at offset ${pos - 1}`);
+    }
+  }
+  return read();
+}
+
 // src/btMonitor.ts
 var zmqCache;
 function loadZmq() {
@@ -2387,6 +2510,7 @@ var STATUS_NAMES = {
 var PROTOCOL_ID = 2;
 var REQ_FULLTREE = 84;
 var REQ_STATUS = 83;
+var REQ_BLACKBOARD = 66;
 function buildRequestHeader(requestType) {
   const buf = Buffer.alloc(6);
   buf.writeUInt8(PROTOCOL_ID, 0);
@@ -2415,11 +2539,14 @@ var BTMonitor = class {
   onInfo;
   onError;
   onTree;
+  onBlackboard;
+  subtreeIds = [];
   constructor(callbacks) {
     this.onStatus = callbacks.onStatus;
     this.onInfo = callbacks.onInfo;
     this.onError = callbacks.onError;
     this.onTree = callbacks.onTree;
+    this.onBlackboard = callbacks.onBlackboard;
   }
   async start(host = "localhost", port = 1666) {
     if (this.running) this.stop();
@@ -2502,6 +2629,28 @@ var BTMonitor = class {
                 } catch {
                 }
               }
+              if (this.onBlackboard && this.subtreeIds.length > 0) {
+                try {
+                  await sock.send([
+                    buildRequestHeader(REQ_BLACKBOARD),
+                    Buffer.from(this.subtreeIds.join(";"))
+                  ]);
+                  const bbFrames = await sock.receive();
+                  if (bbFrames.length >= 2) {
+                    const decoded = decodeMsgpack(Buffer.from(bbFrames[1]));
+                    const flat = {};
+                    if (decoded && typeof decoded === "object") {
+                      for (const subtreeVars of Object.values(decoded)) {
+                        if (subtreeVars && typeof subtreeVars === "object") {
+                          Object.assign(flat, subtreeVars);
+                        }
+                      }
+                    }
+                    this.onBlackboard(flat);
+                  }
+                } catch {
+                }
+              }
             }
           }
         }
@@ -2528,6 +2677,9 @@ var BTMonitor = class {
         sock = null;
       }
     };
+  }
+  setSubtreeIds(ids) {
+    this.subtreeIds = ids;
   }
   stop() {
     this.running = false;
@@ -2687,6 +2839,7 @@ var BTViewerPanel = class _BTViewerPanel {
       this.stopMonitor();
       return;
     }
+    const bbEnabled = vscode.workspace.getConfiguration("behaviortreeViewer").get("monitorBlackboard", true);
     this.monitor = new BTMonitor({
       onStatus: (status) => {
         this.panel.webview.postMessage({
@@ -2713,6 +2866,7 @@ var BTViewerPanel = class _BTViewerPanel {
       onTree: (xml) => {
         try {
           const parsed = parseBTXml(xml);
+          this.monitor?.setSubtreeIds(parsed.trees.map((t) => t.id));
           this.panel.webview.postMessage({
             command: "updateTree",
             data: parsed,
@@ -2721,7 +2875,13 @@ var BTViewerPanel = class _BTViewerPanel {
           });
         } catch {
         }
-      }
+      },
+      onBlackboard: bbEnabled ? (values) => {
+        this.panel.webview.postMessage({
+          command: "monitorBlackboard",
+          values
+        });
+      } : void 0
     });
     this.monitor.start(host, port);
   }

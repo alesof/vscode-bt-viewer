@@ -284,6 +284,18 @@ body {
   padding-left: 10px;
 }
 
+.bb-live-value {
+  display: inline-block;
+  font-family: var(--bt-mono);
+  font-size: 11px;
+  padding: 1px 5px;
+  border-radius: 3px;
+  background: var(--vscode-badge-background, #4d4d4d);
+  color: var(--vscode-badge-foreground, #fff);
+  margin-left: 6px;
+  vertical-align: middle;
+}
+
 /* ---- PALETTE ---- */
 
 .palette-category {

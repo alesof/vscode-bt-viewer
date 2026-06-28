@@ -4,7 +4,7 @@ type ZmqRequestSocket = {
   linger: number;
   connect(addr: string): void;
   close(): void;
-  send(buf: Buffer): Promise<void>;
+  send(buf: Buffer | Buffer[]): Promise<void>;
   receive(): Promise<Buffer[]>;
 };
 
@@ -36,9 +36,14 @@ const STATUS_NAMES: Record<number, string> = {
   11: "IDLE", 12: "IDLE", 13: "IDLE",
 };
 
+import { decodeMsgpack } from "./msgpack";
+
 const PROTOCOL_ID = 2;
 const REQ_FULLTREE = 0x54;
 const REQ_STATUS = 0x53;
+const REQ_BLACKBOARD = 0x42;
+
+const BT_ID_RE = /<BehaviorTree\s+ID="([^"]+)"/g;
 
 function buildRequestHeader(requestType: number): Buffer {
   const buf = Buffer.alloc(6);
@@ -70,17 +75,21 @@ export class BTMonitor {
   private onInfo: (message: string) => void;
   private onError: (message: string) => void;
   private onTree: (xml: string) => void;
+  private onBlackboard: ((values: Record<string, unknown>) => void) | undefined;
+  private subtreeIds: string[] = [];
 
   constructor(callbacks: {
     onStatus: (status: MonitorStatus) => void;
     onInfo: (message: string) => void;
     onError: (message: string) => void;
     onTree: (xml: string) => void;
+    onBlackboard?: (values: Record<string, unknown>) => void;
   }) {
     this.onStatus = callbacks.onStatus;
     this.onInfo = callbacks.onInfo;
     this.onError = callbacks.onError;
     this.onTree = callbacks.onTree;
+    this.onBlackboard = callbacks.onBlackboard;
   }
 
   async start(host: string = "localhost", port: number = 1666): Promise<void> {
@@ -178,6 +187,30 @@ export class BTMonitor {
                   // Tree fetch failed, try next poll
                 }
               }
+
+              if (this.onBlackboard && this.subtreeIds.length > 0) {
+                try {
+                  await sock.send([
+                    buildRequestHeader(REQ_BLACKBOARD),
+                    Buffer.from(this.subtreeIds.join(";")),
+                  ]);
+                  const bbFrames = await sock.receive();
+                  if (bbFrames.length >= 2) {
+                    const decoded = decodeMsgpack(Buffer.from(bbFrames[1]));
+                    const flat: Record<string, unknown> = {};
+                    if (decoded && typeof decoded === "object") {
+                      for (const subtreeVars of Object.values(decoded as Record<string, unknown>)) {
+                        if (subtreeVars && typeof subtreeVars === "object") {
+                          Object.assign(flat, subtreeVars);
+                        }
+                      }
+                    }
+                    this.onBlackboard(flat);
+                  }
+                } catch {
+                  // BB fetch failed, non-fatal
+                }
+              }
             }
           }
         }
@@ -206,6 +239,10 @@ export class BTMonitor {
         sock = null;
       }
     };
+  }
+
+  setSubtreeIds(ids: string[]): void {
+    this.subtreeIds = ids;
   }
 
   stop(): void {

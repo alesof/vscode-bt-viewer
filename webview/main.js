@@ -146,7 +146,8 @@
   let activeSidePanel = null; // "blackboard" | "palette" | "detail" | "subtreeView" | null
   let monitorActive = false;
   let monitorAvailable = true;
-  let lastNodeStatuses = {}; // uid -> status string
+  /** @type {Record<string, unknown> | null} */
+  let liveBBValues = null; // null when monitor inactive, {} when active
 
   // ------ NODE DESCRIPTIONS ------
 
@@ -714,13 +715,14 @@
       chevronHit.setAttribute("class", "collapse-chevron-hit");
       g.appendChild(chevronHit);
 
-      const chevron = document.createElementNS("http://www.w3.org/2000/svg", "text");
-      chevron.setAttribute("x", String(node._w - 10));
-      chevron.setAttribute("y", "13");
-      chevron.setAttribute("text-anchor", "middle");
-      chevron.setAttribute("class", "collapse-chevron");
+      const cx = node._w - 10;
+      const cy = 10;
+      const chevron = document.createElementNS("http://www.w3.org/2000/svg", "polygon");
+      chevron.setAttribute("points", isOpen
+        ? `${cx - 4},${cy - 2} ${cx + 4},${cy - 2} ${cx},${cy + 4}`
+        : `${cx - 2},${cy - 4} ${cx + 4},${cy} ${cx - 2},${cy + 4}`);
       chevron.setAttribute("fill", color.text);
-      chevron.textContent = isOpen ? "\u25BC" : "\u25B6";
+      chevron.setAttribute("class", "collapse-chevron");
       g.appendChild(chevron);
 
       // Click chevron to toggle. For SubTree nodes we flip expandedSubtrees
@@ -1369,6 +1371,13 @@
     // background rect, otherwise the child-by-child walk drifts out of sync.
     inlineComputedStyles(svg, clone);
 
+    // jsPDF only has Helvetica/Times/Courier built-in. Normalise font-family
+    // on all text elements in the clone so the PDF matches the viewer as
+    // closely as possible without embedding a custom font.
+    for (const el of /** @type {SVGSVGElement} */ (clone).querySelectorAll("text")) {
+      el.setAttribute("font-family", "Helvetica");
+    }
+
     // Paint the PDF page background to match the active VSCode theme. jsPDF
     // defaults to white pages, which clashes hard with dark themes. Resolve
     // --vscode-editor-background against the live DOM and prepend a rect
@@ -1520,7 +1529,9 @@
 
   function showBlackboard() {
     const vars = buildBlackboard();
-    const sorted = Object.keys(vars).sort();
+    const live = liveBBValues || {};
+    const allNames = new Set([...Object.keys(vars), ...Object.keys(live)]);
+    const sorted = [...allNames].sort();
 
     let html = "";
     if (sorted.length === 0) {
@@ -1528,19 +1539,29 @@
     } else {
       for (const name of sorted) {
         const v = vars[name];
+        const liveVal = live[name];
         html += `<div class="bb-var">`;
-        html += `<div class="bb-var-name">{${escHtml(name)}}</div>`;
-        if (v.writers.size > 0) {
-          html += `<div class="bb-var-nodes">Write: ${[...v.writers].map(escHtml).join(", ")}</div>`;
+        html += `<div class="bb-var-name">{${escHtml(name)}}`;
+        if (liveVal !== undefined) {
+          html += ` <span class="bb-live-value">${escHtml(String(liveVal))}</span>`;
         }
-        if (v.readers.size > 0) {
-          html += `<div class="bb-var-nodes">Read: ${[...v.readers].map(escHtml).join(", ")}</div>`;
+        html += `</div>`;
+        if (v) {
+          if (v.writers.size > 0) {
+            html += `<div class="bb-var-nodes">Write: ${[...v.writers].map(escHtml).join(", ")}</div>`;
+          }
+          if (v.readers.size > 0) {
+            html += `<div class="bb-var-nodes">Read: ${[...v.readers].map(escHtml).join(", ")}</div>`;
+          }
         }
         html += `</div>`;
       }
     }
 
-    sidePanelTitle.textContent = `Blackboard (${sorted.length} vars)`;
+    const liveCount = Object.keys(live).length;
+    sidePanelTitle.textContent = liveCount > 0
+      ? `Blackboard (${sorted.length} vars · live)`
+      : `Blackboard (${sorted.length} vars)`;
     sidePanelContent.innerHTML = html;
     sidePanel.classList.remove("hidden");
     activeSidePanel = "blackboard";
@@ -1917,8 +1938,6 @@
   let idleFadeTimer = null;
 
   function applyMonitorStatus(statuses) {
-    lastNodeStatuses = statuses;
-
     // Empty statuses = server disconnected (BT finished)
     if (Object.keys(statuses).length === 0) {
       fadeMonitorOverlay();
@@ -2042,7 +2061,6 @@
   }
 
   function clearMonitorOverlay() {
-    lastNodeStatuses = {};
     if (idleFadeTimer) { clearTimeout(idleFadeTimer); idleFadeTimer = null; }
     const svgEl = document.getElementById("tree-group");
     if (svgEl) svgEl.classList.remove("monitor-faded");
@@ -2123,6 +2141,11 @@
         applyMonitorStatus(msg.nodes || {});
         break;
 
+      case "monitorBlackboard":
+        liveBBValues = msg.values || {};
+        if (activeSidePanel === "blackboard") showBlackboard();
+        break;
+
       case "monitorInfo":
         monitorStatusEl.textContent = msg.message;
         break;
@@ -2145,6 +2168,8 @@
         monitorStatusEl.textContent = "";
         clearMonitorOverlay();
         updateFollowButtonState();
+        liveBBValues = null;
+        if (activeSidePanel === "blackboard") showBlackboard();
         break;
 
       case "monitorAvailability":
