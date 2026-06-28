@@ -628,16 +628,30 @@
     rect.setAttribute("ry", "6");
     g.appendChild(rect);
 
-    // Category icon
+    // Category icon: square=control, circle=decorator, diamond=others
     const iconSize = 6;
-    const icon = document.createElementNS("http://www.w3.org/2000/svg", "rect");
-    icon.setAttribute("x", "6");
-    icon.setAttribute("y", "6");
-    icon.setAttribute("width", String(iconSize));
-    icon.setAttribute("height", String(iconSize));
+    const iconX = 6;
+    const iconY = 6;
+    let icon;
+    if (cat === "decorator") {
+      icon = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+      icon.setAttribute("cx", String(iconX + iconSize / 2));
+      icon.setAttribute("cy", String(iconY + iconSize / 2));
+      icon.setAttribute("r", String(iconSize / 2));
+    } else if (cat === "control") {
+      const x1 = iconX, y1 = iconY, x2 = iconX + iconSize, y2 = iconY + iconSize;
+      icon = document.createElementNS("http://www.w3.org/2000/svg", "polygon");
+      icon.setAttribute("points", `${x1},${y1} ${x2},${y1} ${x2},${y2} ${x1},${y2}`);
+    } else {
+      // Diamond (rotated square)
+      const cx = iconX + iconSize / 2;
+      const cy = iconY + iconSize / 2;
+      const h = iconSize / 2;
+      icon = document.createElementNS("http://www.w3.org/2000/svg", "polygon");
+      icon.setAttribute("points", `${cx},${cy - h} ${cx + h},${cy} ${cx},${cy + h} ${cx - h},${cy}`);
+    }
     icon.setAttribute("fill", color.text);
-    icon.setAttribute("opacity", "0.4");
-    icon.setAttribute("rx", cat === "control" ? "0" : cat === "decorator" ? "3" : "1");
+    icon.setAttribute("opacity", "0.5");
     g.appendChild(icon);
 
     // Render wrapped text lines
@@ -1309,7 +1323,7 @@
     "fill", "fill-opacity",
     "stroke", "stroke-opacity", "stroke-width",
     "stroke-linecap", "stroke-linejoin", "stroke-dasharray",
-    "opacity", "font-size", "font-family", "font-weight", "text-anchor",
+    "opacity", "font-size", "text-anchor",
   ];
 
   function inlineComputedStyles(originalEl, clonedEl) {
@@ -1371,11 +1385,16 @@
     // background rect, otherwise the child-by-child walk drifts out of sync.
     inlineComputedStyles(svg, clone);
 
-    // jsPDF only has Helvetica/Times/Courier built-in. Normalise font-family
-    // on all text elements in the clone so the PDF matches the viewer as
-    // closely as possible without embedding a custom font.
-    for (const el of /** @type {SVGSVGElement} */ (clone).querySelectorAll("text")) {
-      el.setAttribute("font-family", "Helvetica");
+    // svg2pdf reads getComputedStyle, which CSS class rules override. Remove
+    // class attributes from text elements so the presentation attributes set
+    // by inlineComputedStyles become the computed values svg2pdf sees.
+    // Also normalise font-family to "helvetica" (a jsPDF built-in) and
+    // font-weight to "bold"/"normal" (jsPDF doesn't understand numeric weights).
+    for (const el of /** @type {SVGElement} */ (clone).querySelectorAll("text")) {
+      el.removeAttribute("class");
+      el.setAttribute("font-family", "helvetica");
+      const fw = el.getAttribute("font-weight") || "normal";
+      el.setAttribute("font-weight", (fw === "bold" || fw === "bolder" || parseInt(fw) >= 600) ? "bold" : "normal");
     }
 
     // Paint the PDF page background to match the active VSCode theme. jsPDF
